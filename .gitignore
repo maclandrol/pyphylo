@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+Data/
+test/
+speclist
+
+# Distribution and packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+*.egg
