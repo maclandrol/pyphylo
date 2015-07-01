@@ -1,15 +1,14 @@
 from params import *
 from Bio import AlignIO, SeqIO
-from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 import os, sys
-import random
+import collections
+import numpy as np
 import subprocess, threading
-from Bio.Alphabet import generic_protein, IUPAC
 
 class TerminationPipe(object):
     #Background process class
-    def __init__(self, cmd, timeout, silent=False):
+    def __init__(self, cmd, timeout, silent=True):
         self.cmd = cmd
         self.timeout = timeout
         self.process = None
@@ -74,7 +73,7 @@ def executeCMD(cmd, prog, silent=True, useos=False):
         return err
 
 
-def call_seqprog(commandLine, outputFile, timeout, outputFormat='fasta'):
+def call_seqprog(commandLine, outputFile, timeout, outputFormat='fasta', silent=True):
     """clean call to alignment or alignment edition"""
     geneOutput = None
     retry = True
