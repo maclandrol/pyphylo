@@ -30,7 +30,7 @@ import collections
 
 from applications import *
 from phydata.mtgenes import revmtgenes
-from masterfilepaster import parse_master_file, get_color
+from masterfileparser import parse_master_file, get_color
 
 # Setting Entrez parameters
 Entrez.email = email
@@ -38,11 +38,13 @@ Entrez.tool = "pyPhylo_LocalScript"
 maxCheck = 2
 ALIGN_METHODS = {'muscle':['muscle'], 'mafft': ['mafft'], 'hmmmuscle' : ['hmmmuscle'],\
                 'clustalo': ['clustalo'], 'prank' : ['prank'],\
-                 'fsa':['fsa'], 'multi': ['muscle', 'mafft', 'clustalo'],\
+                 'fsa':['fsa'], 'fast': ['muscle', 'mafft', 'clustalo'],\
+                 'multi' : ['muscle', 'mafft', 'clustalo', 'fsa'],\
                  'all': ['muscle', 'mafft', 'clustalo', 'prank', 'fsa']}
 
 
 def regexp(expr, item):
+    """Regexp for search in sqlite database"""
     reg = re.compile(expr)
     return reg.search(item) is not None
 
@@ -244,16 +246,21 @@ class pData():
         self.alignmethod = pyphy.alignmethod
         self.alignment = pyphy.alignment
         self.concat = pyphy.concat
+        self.concatpart = pyphy.concatpart
         self.edited = pyphy.edited
         self.oridata = (pyphy.oriseq, pyphy.orispec)
         self.tree = pyphy.tree
         self.order = pyphy.order
         self.state = pyphy.state
+        self.concatfile = ""
+        if hasattr(pyphy, 'concatfile'):
+            self.concatfile = pyphy.concatfile
 
 class pyPhylo(object):
 
-    def __init__(self, wd, specielist, genbank, corrdb, oridata, complete=True, alignmethod='multi', \
-                        editmethod='both', orthomcl=True, prompt=True, concat_order=[]):
+    def __init__(self, wd, specielist, genbank, corrdb, oridata, complete=True, \
+                        editmethod='both', alignmethod='muscle', orthomcl=True, \
+                        prompt=True, concat_order=[]):
         """Initialisation of the pyphylo object"""
         self.spec2genes = collections.defaultdict(list)
         self.gene2spec = collections.defaultdict(dict)
@@ -263,6 +270,7 @@ class pyPhylo(object):
         self.orthoinput = os.path.join(wd, ortho_indir)
         self.orthooutput = os.path.join(wd, ortho_outdir)
         self.outpdf = os.path.join(wd, outputpdf)
+        self.concatfile = concatfile
         self.outtree = os.path.join(wd, outputtree)
         self.datadump = os.path.join(wd, datadumping)
         self.order = concat_order
@@ -279,6 +287,7 @@ class pyPhylo(object):
             self.alignment = collections.defaultdict(dict)
             self.edited = collections.defaultdict(dict)
             self.concat = None
+            self.concatpart = None
             self.tree = None
             all_seq = SeqIO.index_db(os.path.join(wd,dbdir,seqdb), genbank, format="genbank")
             self.speclist = specielist
@@ -320,7 +329,7 @@ class pyPhylo(object):
                 #print("Au debut "+ str(len(self.speclist)))
                 for row in cursor:
                     s_id, spec = row[0], row[1]
-                    spec = spec.replace('.', '')
+                    spec = spec.replace('.', '').replace('-', '_')
                     curr_seq = all_seq[s_id]
                     for f in curr_seq.features:
                         # this should filter hypothetical protein that we do not want
@@ -356,7 +365,8 @@ class pyPhylo(object):
                                 self.gene2spec[sgene][spec] = rec
 
 
-            if orthomcl:
+            error, binaries = check_binaries([orthomclpipe])
+            if not error:
                 self.orthomcl()
             self.speclist = self.spec2genes.keys()
             self.genelist = self.gene2spec.keys()
@@ -373,6 +383,7 @@ class pyPhylo(object):
         self.spec2genes = pk.spec2genes
         self.alignment = pk.alignment
         self.concat = pk.concat
+        self.concatpart = pk.concatpart
         self.edited =  pk.edited
         self.oriseq, self.orispec = pk.oridata
         self.tree = pk.tree
@@ -380,7 +391,9 @@ class pyPhylo(object):
         self.editmethod = pk.editmethod
         self.alignmethod = pk.alignmethod
         self.state = pk.state
-
+        self.concatfile = ""
+        if hasattr(pk, 'concatfile'):
+            self.concatfile = pk.concatfile
 
     def orthomcl(self, confile=None):
         """
@@ -425,11 +438,12 @@ class pyPhylo(object):
         show prompt
         """
         if not choices:
-            choices = ['edit', 'report', 'save', 'align', 'refine', 'reset', 'load', 'concat', 'raxml']
+            choices = ['edit', 'report', 'save', 'align', 'refine', 'reset', 'load', 'concat','distR', 'fusgene']
         actions = {'edit': self.edit_data, 'save': self.dump_data, \
                     'report' : self.report_data, 'load': self.load_data, \
                     'align': self.perform_align, 'refine' : self.refine_align, \
-                    'concat': self.concat_align,  'raxml' : self.run_raxml, 'reset': self.reset_data}
+                    'concat': self.concat_align,  'distR' : self.distR, \
+                    'fusgene': self.fusgene, 'reset': self.reset_data}
 
         print ("""
             --------------------------------------------------------------------
@@ -442,10 +456,10 @@ class pyPhylo(object):
             """%(' -- '.join(choices)))
 
         action = raw_input('waiting for your action : ')
-        action = action.strip().lower()
+        action = action.strip()
         while (action and action not in choices):
             action = raw_input('Incorrect choice, Enter action : ')
-            action = action.strip().lower()
+            action = action.strip()
 
         if(action):
             actions[action]()
@@ -455,6 +469,88 @@ class pyPhylo(object):
                 self.ask_prompt()
 
         else: return False
+
+
+    def fusgene(self, gene1=None, gene2=None, order=None):
+        """ Function to make a fusion of gene"""
+        if gene1 is None:
+            gene1 = raw_input("Enter first gene : ")
+        if gene2 is None:
+            gene2 = raw_input("Enter second gene : ")
+        if (gene1 not in self.genelist) or (gene2 not in self.genelist):
+            print("Genes not found, returning to main menu...\n")
+        else:
+            if self.state < 2 :
+                self.alignment['muscle'] = self.alignSequences(method='muscle', \
+                                                outdir=None, timeout=99999999, verbose=False)
+            alignid = self.alignment.keys()[0]
+            if not order:
+                order = sorted([gene1, gene2])
+            if(len(order) > 2):
+                print("Order argument is bigger than two, try again\n")
+                return
+            else:
+                genefusion, fusionpart = self.concatenateSequences(order, self.speclist, self.alignment[alignid], missing='-', alpha=generic_protein)
+                if genefusion:
+                    self.genelist = list(set(self.genelist) - {gene1, gene2})
+                    new_gene = "_".join(order)
+                    self.genelist.append(new_gene)
+                    # print self.spec2genes.keys()
+                    for seq in genefusion:
+                        spec = seq.id.replace('_', ' ')
+                        seq.name = new_gene
+                        seq.id = '%s#%s'%(new_gene, spec)
+                        uniq_char = "".join(set(str(seq.seq)))
+                        if uniq_char != '-':
+                            self.gene2spec[new_gene][spec] = seq
+                            self.spec2genes[spec].append(seq)
+
+
+    def distR(self, rate_thresh=-1, align=None):
+        """load rate file and use it to filter gene"""
+        print("This is experimental\n")
+
+        if self.state < 2 :
+            self.alignment['muscle'] = self.alignSequences(method='muscle', \
+                                            outdir=None, timeout=99999999, verbose=False)
+            align = 'muscle'
+
+        if not align:
+            align = self.selection_alignment(self.alignment, filename=filename)
+
+        if not(align):
+            print("Alignment not provided, nor selected, returning to menu...\n")
+            return
+
+        distdir = os.path.join(self.aligndir, align)
+        executeCMD("script/distmat.sh %s"%(distdir))
+        distFile = os.path.join(self.aligndir, align, "tree.rates")
+        try:
+            with open(distFile, 'r') as DISTFILE:
+                for line in DISTFILE:
+                    print(line.replace(".fasta", "\t"))
+                print("\n")
+            retry = True
+            while(retry):
+                rate_thresh = raw_input("Enter your required threshold : ")
+                if not isFloat(rate_thresh):
+                    retry = raw_input("Error : rate should be a float, retry (y/n) ? ")
+                    retry = retry.lower().startswith('y')
+                else:
+                    retry = False
+                    rate_thresh = float(rate_thresh)
+            if(rate_thresh > 0):
+                genes, rates, outliers = load_rate_file(distFile, rate_thresh)
+                print("This genes will be discarded for being outliers : \n")
+                print outliers
+                outgenes = zip(genes[outliers], rates[outliers])
+                for g, r in outgenes:
+                    print("%s : %f\n"%(g, r))
+                    confirm = raw_input("Please confirm y/n : ")
+                    if(confirm.lower().startswith('y')):
+                        self.genelist = list(set(self.genelist) - set(genes[outliers]))
+        except :
+            print("Error, (check your distFile), returning to menu\n")
 
 
     def reset_data(self):
@@ -572,12 +668,25 @@ class pyPhylo(object):
             geneorder = sorted(self.genelist)
         else:
             geneorder = self.order
-        self.concat = self.concatenateSequences(geneorder, self.speclist, alignment[best_align])
+
+        self.concatfile = raw_input("Enter the final concat alignment filename : ")
+
+        self.concat, self.concatpart = self.concatenateSequences(geneorder, self.speclist, alignment[best_align])
+
 
     def save_concat(self, format="phylip-relaxed"):
         """save the concatenated file """
+        if not self.concatfile:
+            print("Concatfile is not a valid path, setting default name to 'alignment.fasta' before saving")
+            self.concatfile = "alignment.fasta"
+
+        # access to here assume that concatfile is defined
         if(self.concat):
-            AlignIO.write(self.concat, os.path.join(self.aligndir,"alignment.fasta"), format=format)
+            AlignIO.write(self.concat, os.path.join(self.aligndir, self.concatfile), format=format)
+        if self.concatpart:
+            with open(os.path.join(self.aligndir, self.concatfile.split('.')[0]+'_partition.txt'), 'w') as PART:
+                for (genename, pos1, pos2) in self.concatpart:
+                    PART.write("LG, %s = %d-%d\n"%(genename, pos1, pos2))
 
 
     @classmethod
@@ -602,6 +711,16 @@ class pyPhylo(object):
         def validate_choice(inp):
             return inp.lower().startswith('y')
 
+        nooverwrite = True
+        if(self.state > 1 or len(self.genelist)<len(self.gene2spec.keys())):
+            print("\nIt's seems that you already run edit data on gene once!\nYou can\
+             discard your previous data and start over (default) or edit it.")
+            nooverwrite = validate_choice(raw_input('Edit previous data y/n? '))
+
+        big_gene_list = self.gene2spec.keys()
+        if(nooverwrite):
+            big_gene_list = self.genelist
+
         # part 1 : remove strange gene
         inp = raw_input("1 : Do you want to remove some genes y/n? ")
         to_remove = set([])
@@ -616,19 +735,24 @@ class pyPhylo(object):
 
             if(isFloat(values)):
                 values = float(values)
-                required = len(self.spec2genes.keys())*values/100.
-                for gene in self.gene2spec.keys() :
+                required = abs(len(self.spec2genes.keys())*values/100.)
+                for gene in big_gene_list :
                     if len(self.gene2spec[gene]) < required:
                         to_remove.add(gene)
 
             elif ('-' in values):
-                to_remove = set([x.strip() for x in values.split('-') if x])
+                gene_regs = [x.strip() for x in values.split('-') if x]
+                for greg in gene_regs:
+                    greg = re.compile(greg)
+                    for g in big_gene_list:
+                        if greg.match(g):
+                            to_remove.add(g)
 
             prefix = '-' if to_remove else ''
             print ("The following genes will be removed: " + prefix + "-".join(to_remove))
             answer = raw_input("Please confirm y/n : ")
             if validate_choice(answer):
-                self.genelist = list(set(self.gene2spec.keys()) - to_remove)
+                self.genelist = list(set(big_gene_list) - to_remove)
 
         # part 2 remove some species
         to_remove = set()
@@ -737,9 +861,16 @@ class pyPhylo(object):
             Multiple Alignment mode
             ---------------------------
         """)
+        error, binaries = check_binaries([muscle, mafft, clustalo, prank, fsa, probcons], getAll=False)
+        if(error):
+            print(error)
+            print("Alignment not performed!")
+            return
+        else :
+            global ALIGN_METHODS
+            ALIGN_METHODS = dict((k,list(set(v).difference(binaries))) for (k,v) in ALIGN_METHODS.items() if k not in binaries)
 
-        print("\nSelect alignment ('muscle' - 'mafft' - 'clustalo' - 'prank' - "
-                + "'fsa' - 'all' - 'multi' - 'hmmmuscle') or enter to skip \n")
+        print("\nSelect alignment ( " + " - ".join(ALIGN_METHODS.keys()) +" ) or enter to skip \n")
 
         if not self.alignmethod:
             self.alignmethod = 'muscle'
@@ -787,14 +918,28 @@ class pyPhylo(object):
         output = {}
         alignedSomething = []
         outform = {'muscle': 'fasta' , 'mafft' : 'fasta', 'fsa':'fasta', 'prank':'fasta',\
-                'clustalo' : 'fasta'}
+                'clustalo' : 'fasta', 'probcons' : 'fasta'}
         print("\nStarted Alignment")
 
         fsa_nice_val = "nice -5"
+        prank_nice_val = fsa_nice_val
+        probcons_nice_val = ""
+        # could have made a loop (lazyness overflow!!)
+        # bad manu!
         if 'fsa' in preferences.keys() and preferences['fsa']:
             for s in preferences['fsa']:
                 if(s.startswith('nice')):
                     fsa_nice_val = s
+
+        if 'probcons' in preferences.keys() and preferences['probcons']:
+            for s in preferences['probcons']:
+                if(s.startswith('nice')):
+                    probcons_nice_val = s
+
+        if 'prank' in preferences.keys() and preferences['prank']:
+            for s in preferences['prank']:
+                if(s.startswith('nice')):
+                    prank_nice_val = s
 
         for i, gene in enumerate(self.genelist):
             if verbose: print("... trying to align gene : "+gene+ " ....with "+method)
@@ -822,12 +967,20 @@ class pyPhylo(object):
                     commandLine += " ".join(preferences['clustalo'])
 
             if method == 'fsa':
-                commandline = fsa_nice_val + " " +fsa+ " " + inputFile + "--gui " + " 1> " + outputFile + " 2>/dev/null"
+                commandLine = fsa_nice_val + " " + fsa + " " + inputFile + " --gui "
                 if ('fsa' in preferences.keys() and preferences['fsa']):
                     commandLine += " ".join([x for x in preferences['fsa'] if 'nice' not in x])
+                commandLine += " 1> " + outputFile + " 2>/dev/null"
+                print commandLine
+
+            if method == 'probcons':
+                commandLine = probcons_nice_val + " "  + probcons + " " + inputFile + " "
+                if ('probcons' in preferences.keys() and preferences['probcons']):
+                    commandLine += " ".join([x for x in preferences['probcons'] if 'nice' not in x])
+                commandLine += " > " + outputFile
 
             if method == 'prank':
-                commandLine = prank +' -d=' + inputFile + " -o=" + outputFile + " "
+                commandLine = prank_nice_val + " " + prank +' -d=' + inputFile + " -o=" + outputFile + " "
                 if('prank' in preferences.keys() and preferences['prank']):
                     commandLine += " ".join(preferences['prank'])
 
@@ -839,6 +992,9 @@ class pyPhylo(object):
             raise RuntimeError("Nothing was aligned !!!")
         return output
 
+    def get_align_path(self, method, gene):
+        """Get the aligned file of a gene"""
+        return os.path.join(self.aligndir, method, gene+".fasta")
 
     def selection_alignment(self, alignment, filename="alignstat.html"):
 
@@ -863,8 +1019,9 @@ class pyPhylo(object):
         for meth in dispo_align:
             stats[meth]= alignstat(alignment[meth], self.genelist)
 
-        out = PrettyTable(['Genes', 'Align_len', 'Gap_min', 'Gap_max', 'Gap_mean', 'Gap_std'])
+        out = PrettyTable(['Genes', 'Align_len', 'Gap_min', 'Gap_max', 'Gap_mean', 'Gap_std', 'Avg ID'])
         out.hrules = ALL
+        err, bina = check_binaries([eslalistat])
         for gene in self.genelist:
             try:
                 length = []
@@ -872,7 +1029,16 @@ class pyPhylo(object):
                 gapmax = []
                 gapmean = []
                 gapstd = []
+                avgid = []
                 for meth in dispo_align:
+                    pipe = TerminationPipe(eslalistat+ " " +self.get_align_path(meth, gene), 999, True)
+                    pipe.run()
+                    if(not (err or pipe.failure)):
+                        match = re.search('(?<=Average identity:)\s*[0-9]*\%', pipe.stdout)
+                        avgid.append('%s : %s'%(meth, (match.group(0).strip() if match else 'N/A')))
+                    else :
+                        avgid.append('%s : %s'%(meth, 'N/A'))
+
                     length.append('%s : %d'%(meth, stats[meth][gene]['length']))
                     gapmin.append('%s : %d'%(meth, stats[meth][gene]['gapmin']))
                     gapmax.append('%s : %d'%(meth, stats[meth][gene]['gapmax']))
@@ -880,7 +1046,7 @@ class pyPhylo(object):
                     gapmean.append('%s : %.2f'%(meth, stats[meth][gene]['gapmean']))
 
                 data = [gene, "\n".join(length), "\n".join(gapmin), "\n".join(gapmax),\
-                            "\n".join(gapmean), "\n".join(gapstd)]
+                            "\n".join(gapmean), "\n".join(gapstd),"\n".join(avgid)]
                 out.add_row(data)
             except KeyError:
                 # the gene was not aligned, just pass
@@ -917,9 +1083,16 @@ class pyPhylo(object):
             Multiple Alignment Edition mode
             --------------------------------
         """)
-
         methods = {'gblocks':['gblocks'], 'trimal' : ['trimal'], 'both': ['gblocks', 'trimal']}
-        print("\nSelect editors ('gblocks' - 'trimal' - 'both' or enter to skip\n")
+        error, binaries = check_binaries([gblocks, trimal], getAll=False)
+        if(error):
+            print(error)
+            print("Alignment not refined!")
+            return
+        else :
+            method = dict((k,list(set(v).difference(binaries))) for (k,v) in methods.items() if k not in binaries)
+
+        print("\nSelect editors (" + " - ".join(methods.keys())+ " or enter to skip\n")
         if not self.editmethod:
             self.editmethod = 'gblocks'
         error = True
@@ -980,7 +1153,8 @@ class pyPhylo(object):
 
         if method == 'gblocks':
             for out in gblocks_out:
-                shutil.move(out, outdir)
+                out_basename = os.path.basename(out).replace('-gb', '')
+                shutil.move(out, os.path.join(outdir, out_basename))
 
         if not any(editedSomething):
             raise RuntimeError("Nothing was aligned !!!")
@@ -992,10 +1166,14 @@ class pyPhylo(object):
         """Concatenate alignment"""
 
         align_dict = {}
+        genepos = []
+        lastpos = 0
         for gene in geneorder:
             if gene in alignment.keys():
                 cur_al = alignment[gene]
                 al_len = cur_al.get_alignment_length()
+                genepos.append((gene, lastpos+1, al_len+lastpos))
+                lastpos += al_len
                 spec_dict = dict((x.id.split('#')[1].replace('_', ' '), x) for x in cur_al)
                 for spec in speclist :
                     # default , put missing data
@@ -1010,11 +1188,16 @@ class pyPhylo(object):
         for spec in align_dict.keys():
             align_dict[spec].id = spec.replace(' ', '_')
 
-        return MultipleSeqAlignment(align_dict.values())
+        return MultipleSeqAlignment(align_dict.values()), genepos
 
 
-    def muscleAndHmm(self, timeout, outdir, loop=10, minqual=9):
+    def muscleAndHmm(self, timeout, outdir, loop=10, minqual=9, check_muscle=True):
         """Align and refine at the same time with hmmalign and muscle"""
+        error, binaries = check_binaries([muscle, hmmbuild, hmmalign, eslalimask, eslalimanip])
+        if(error):
+            print error
+            print("Alignment not done!")
+            return
 
         def accessQuality(alignfile, output, minqual):
             # this serve to format the output
@@ -1034,7 +1217,14 @@ class pyPhylo(object):
             outdir =  os.path.join(self.aligndir, 'hmmmuscle')
             self.purge_directory(outdir)
 
-        self.alignSequences(method='muscle', outdir=outdir)
+        muscledir = os.path.join(self.aligndir, 'muscle')
+        # if we have already done some alignment with muscle
+        # we should not waste time
+        if (check_muscle):
+            if (os.path.exists(muscledir) and os.listdir(muscledir)):
+                ans = raw_input('Muscle alignment found\nDo you want to use it (Y/n)? ')
+                if ans.strip().upper() != 'Y':
+                    self.alignSequences(method='muscle')
 
         cur_dir = []
         for i in xrange(loop):
@@ -1045,7 +1235,7 @@ class pyPhylo(object):
         bestiter = {}
         alignment = {}
         for gene in self.genelist:
-            inputFile = os.path.join(outdir, gene+".fasta")
+            inputFile = os.path.join(muscledir, gene+".fasta")
             print('... trying to run hmmbuild and hmmalign '+str(loop)+" times for "+ gene)
             quality = []
             outlist = []
@@ -1066,7 +1256,7 @@ class pyPhylo(object):
 
             bestiter[gene] = outlist[np.asarray(quality).argmin()]
             cmdline = eslalimask + " "
-            align_file = os.path.join(outdir, gene+".ali")
+            align_file = os.path.join(outdir, gene+".sto")
             option = '-o %s -p '%(align_file)
             if 'hmmmuscle' in preferences.keys() and preferences['hmmmuscle']:
                 ppcon = False
@@ -1104,7 +1294,8 @@ if __name__ == '__main__':
     parser.add_argument("--concat", help="concatenation order - default : alphabetic order",  type=argparse.FileType('r'))
 
     args = parser.parse_args()
-    specielist = [line.strip() for line in args.species if not line.startswith('#')]
+    specielist = [line.strip() for line in args.species if (line.strip() and not line.startswith('#'))]
+
     if (args.checkspec):
         specielist = check_specie_list(specielist, args.taxon, args.clades)
     orispec = specielist.pop(0)
@@ -1117,6 +1308,7 @@ if __name__ == '__main__':
         seq_id = re.search('(?<=ms\s).*(?=\s\;)', seq.description).group(0)
         seq.name = seq_id
         seq.id = seq_id
+        seq.seq = seq.seq.strip('*')
         oriseq[seq_id] = seq
 
     annote_genes(genome, genes, oriseq.keys())

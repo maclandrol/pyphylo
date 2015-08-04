@@ -4,6 +4,7 @@ from Bio.SeqRecord import SeqRecord
 import os, sys
 import collections
 import numpy as np
+from distutils import spawn
 import subprocess, threading
 
 class TerminationPipe(object):
@@ -12,10 +13,9 @@ class TerminationPipe(object):
         self.cmd = cmd
         self.timeout = timeout
         self.process = None
-        self.output = None
         self.failure = False
-        self.stderr = 'EMPTY'
-        self.stdout = 'EMPTY'
+        self.stderr = ''
+        self.stdout = ''
         self.silent = silent
 
     def run(self, silent=None, changeDir=False):
@@ -30,7 +30,7 @@ class TerminationPipe(object):
                     self.process = subprocess.Popen("./requires/" + self.cmd, stdout=subprocess.PIPE,shell=True, stderr=subprocess.PIPE)
                 else:
                     self.process = subprocess.Popen(self.cmd, stdout=subprocess.PIPE,shell=True, stderr=subprocess.PIPE)
-            self.output = self.process.communicate()
+            self.stdout, self.stderr = self.process.communicate()
 
         def loudTarget():
             if sys.platform == 'win32':
@@ -43,7 +43,7 @@ class TerminationPipe(object):
                     self.process = subprocess.Popen("./requires/" + self.cmd, shell=False)
                 else:
                     self.process = subprocess.Popen(self.cmd, shell=False)
-            self.output=self.process.communicate()
+            self.stdout, self.stderr = self.process.communicate()
 
         if silent: self.silent = silent
         if self.silent:
@@ -57,6 +57,39 @@ class TerminationPipe(object):
             thread.join()
             self.failure = True
 
+
+def check_binaries(binlist, getAll=True):
+    """Check is a list of binaries exist"""
+    nf_binaries = []
+    for bina in binlist:
+        if not spawn.find_executable(bina):
+            nf_binaries.append(bina)
+    error = "Binaries not found : "+", ".join(nf_binaries) + " !"
+    if (not nf_binaries) or (len(nf_binaries)<len(binlist) and not getAll):
+        error = ""
+    return error, nf_binaries
+
+
+def load_rate_file(file, m=2.):
+    """load a rate file in order to discard gene"""
+    def reject_outliers(data, m):
+        # this code was copied from stackoverflow
+        # http://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
+        d = np.abs(data - np.median(data))
+        mdev = np.median(d)
+        s = d/mdev if mdev else 0.
+        return (s>=m) & (data - np.median(data)>0)
+
+    genes = []
+    rates = []
+    with open(file, 'r') as INFILE:
+        for line in INFILE :
+            gene, rate = line.split()
+            gene = gene.strip().replace(".fasta", "")
+            rate = float(rate.strip())
+            genes.append(gene)
+            rates.append(rate)
+    return np.asarray(genes), np.asarray(rates),  reject_outliers(rates, m)
 
 def executeCMD(cmd, prog, silent=True, useos=False):
     """Execute a command line in the shell"""
@@ -119,7 +152,6 @@ def alignstat(aligndict, allist, gapType='-'):
     return output
 
 
-
 def run_orthomcl(spec2genes, indir, outdir, confile=None):
     """Run orthomcl-pipeline"""
 
@@ -127,7 +159,7 @@ def run_orthomcl(spec2genes, indir, outdir, confile=None):
         return len(os.listdir(os.path.join(outdir,"groups"))) > 0
 
     if not confile:
-        confile =  def_conf_file
+        confile = def_conf_file
     if not os.path.exists(indir):
         os.mkdir(indir)
     if not os.path.exists(outdir):

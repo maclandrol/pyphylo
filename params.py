@@ -15,30 +15,34 @@ datadumping = "classdump"
 
 #file
 seqdb = "seqs.db"
+# If you let this empty, the program will ask you
+# about the concatenated alignment filename
+concatfile = ""
 
 #binaries
 pdfviewer = 'evince'
 trimal = 'trimal'
-#docs http://trimal.cgenomics.org/use_of_the_command_line_trimal_v1.2
 gblocks = 'Gblocks'
-#docs
 raxml = 'raxml'
-metal ='metal'
-hmmbuild = 'hmmbuild'
-hmmalign = 'hmmalign'
-fas = 'fas'
+fsa = 'fsa'
 muscle = 'muscle'
 prank = 'prank'
 clustalo = 'clustalo'
 mafft = 'mafft'
+probcons = 'probcons'
 orthomclpipe = 'orthomcl-pipeline'
-
+hmmbuild = 'hmmbuild'
+hmmalign = 'hmmalign'
 eslalimask = 'esl-alimask'
 eslalimanip = 'esl-alimanip'
-hmmiters = 10
+# not necessary
+eslalistat = 'esl-alistat'
+metal ='metal'
+
+hmmiters = 50
 #programmes preferences
 # aditionnal parameters for each program
-# do not touch the output format !!
+# IMPORTANT : do not touch the output format !!
 # for fsa, you could add a nice parameter : default will be -5
 # for gblocks you should specify the type (-t=p)
 # please use lower case for key
@@ -46,7 +50,7 @@ hmmiters = 10
 preferences = {
     'gblocks' : ["-t=p", "-b3=5", "-b4=5",  "-b5=h"],
     'trimal' : ['-automated1'],
-    'hmmmuscle' : ["--pthresh 0.95", "--pfract 0.5"]
+    'hmmmuscle' : ["--pthresh 0.90", "--pfract 0.5"]
 }
 
 

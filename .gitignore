@@ -3,6 +3,8 @@ __pycache__/
 Data/
 test/
 speclist
+script/raxml*
+script/FastTree
 
 # Distribution and packaging
 .Python

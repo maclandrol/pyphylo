@@ -4,7 +4,7 @@ from reportlab.lib.units import cm
 from Bio.Graphics import GenomeDiagram
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqFeature import SeqFeature, FeatureLocation
-from Bio.Alphabet import generic_nucleotide
+from Bio.Alphabet import generic_protein
 
 import sys, os
 
@@ -72,6 +72,6 @@ def parse_master_file(masterfile):
                 curpos = int(curpos) + len(seq.strip())
 
 
-    genomerecord = SeqRecord(Seq(genomic_seq, generic_nucleotide), id=genomic_title.split('_')[0], description=genomic_title)
+    genomerecord = SeqRecord(Seq(genomic_seq, generic_protein), id=genomic_title.split('_')[0], description=genomic_title)
 
     return genes, genomerecord
